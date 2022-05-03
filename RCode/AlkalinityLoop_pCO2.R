@@ -4,39 +4,45 @@
 #runs the code through C rather than straight through R studio program. The program will print the output graphs as PDF.
 #The code preforms a sensitivity analysis on alkalinity values for the Upper Clarkfork River in Montana.
 
-# devtools::install_github(
-#   repo = "robpayn/metabc",
-#   ref = "main",
-#   subdir = "pkg"
-# )
+#Alkalinity SA loop, using best fit values for Fix and Resp ratios (-0.32 and 1.07)
+rm(list=ls())
+
+library(metabc)
+library(dictools)
+
+setwd("C:/Users/larey/OneDrive - Montana State University/REU NOTES/RUE")
 
 
-#Running a loop with varying values for Fixation Stoichiometric Ratio, respiration ratio is set to 1.07
-
-rm(list=ls()) #clearing variables & environment
-
-library(metabc) #loading library
-
-setwd("C:/Users/larey/OneDrive - Montana State University/REU NOTES/RUE") #set working directory
-
-load(file = "./2014-09-12/signal.RData") #stream data
+load(file = "./2014-09-12/signal.RData")
 
 #variable name and values for the vector
-ratioDic <- c(-0.2, -0.26, -0.32, -0.38, -0.44, -1)
-ratioDo <- -1/ratioDic
+alkalinity <- c(2850, 2852, 2854, 2856, 2857, 2858, 2860, 2862, 2864, 2866, 2868, 2870)
 
 #line colors for each run in the loop
-modelcolors <- c("limegreen", "blue", "black", "magenta", "red", "cyan3")
+modelcolors <- c(
+  "aquamarine4",
+  "aquamarine3",
+  "aquamarine2",
+  "aquamarine1",
+  "black",
+  "darkslategray1",
+  "darkslategray2",
+  "deepskyblue",
+  "deepskyblue1",
+  "deepskyblue2",
+  "deepskyblue3",
+  "deepskyblue4"
+)
 
 #changing line widths
-linewidths <- c(1, 1, 2, 1, 1, 1)
+linewidths <- c(1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1)
 
 #loop simulation output
-modelsims <- vector(mode = "list", length = length(ratioDic))
+modelsims <- vector(mode = "list", length = length(alkalinity))
 
 #startloop
-for(index in 1:length(ratioDic)){
-  # sets up DO baseline values with OneStation Model using NLS
+for(index in 1:length(alkalinity)){
+  # sets up DO baseline values with OneStationMetabDO using NLS
   modelDO <- CMetabDo$new(
     type = "ForwardEuler",
     dailyGPP = 300,
@@ -54,7 +60,7 @@ for(index in 1:length(ratioDic)){
   );
   
   y<- signalOut$getVariable("do")
-  #Setting up NLS parameters for OneStation model
+  #Setting up NLS params for onestation
   runmodelDO<-function(
     params,
     metabModel) 
@@ -74,6 +80,10 @@ for(index in 1:length(ratioDic)){
     
     if(!is.na(params["ratioDoCResp"])) {
       metabModel$setMetabDoParam("RatioDoCResp", params["ratioDoCResp"])
+    }
+    
+    if(!is.na(params["alkalinity"])) {
+        metabModel$setMetabDoParam("Alkalinity", params["alkalinity"])
     }
     
     metabModel$run()
@@ -98,8 +108,26 @@ for(index in 1:length(ratioDic)){
       k600 = coefficients["k600est", "Estimate"]
     )
   )
+
+  upstreamDIC <- 1e6 * 
+    apply(
+      X = signalIn$dataFrame$data[,c("temp", "pCO2")], 
+      MARGIN = 1,
+      FUN = function(row)
+      {
+        if (is.finite(row["temp"]) && is.finite(row["pCO2"])) {
+          ce <- CarbonateEq$new(tempC = row["temp"]);
+          return(ce$optDICFromfCO2TotalAlk(
+            fCO2 = row["pCO2"], 
+            totalAlk = alkalinity[index] * 1e-6
+          )$concDIC);
+        } else {
+          return(NA);
+        }
+      }
+    );
   
-  #Two Station DO-DIC Model
+  #twostation do dic
   modelDoDic <- CMetabLagrangeDoDic$new(
     type = "CNOneStep",
     dailyGPP = coefficients["dailyGPPest", "Estimate"],
@@ -115,22 +143,23 @@ for(index in 1:length(ratioDic)){
     upstreamTemp = signalIn$getVariable("temp"),
     stdAirPressure = 1,
     parTotal = -1,
-    ratioDicCFix = ratioDic[index],
+    ratioDicCFix = -0.32,
     ratioDicCResp = 1.07,
-    upstreamDIC = signalIn$getVariable("dic"),
+    upstreamDIC = upstreamDIC,
     pCO2air = 400,
-    upstreamAlkalinity = 2857,
-    downstreamAlkalinity = 2857,
+    upstreamAlkalinity = alkalinity[index],
+    downstreamAlkalinity = alkalinity[index],
     timesteps = 0
   );
   
   modelDoDic$run()
   
   modelsims[[index]] <- modelDoDic
+  modelsims[[index]]$.__enclos_env__$upstreamDIC <- upstreamDIC
   
 } #end of SA loop  
 
-#finding min and max of each run of model DoDIC and min and max of the change over the reach
+#finding min and max of each run of model DoDIC
 minmaxmatrix <- sapply(
   X = modelsims,
   FUN = function(modelDoDic)
@@ -146,178 +175,34 @@ minmaxmatrix <- sapply(
       maxDIC = max(modelDoDic$output$dic$dic, na.rm = TRUE),
       minDeltaDO = min(modelDoDic$output$do$dox - signalIn$getVariable("do"), na.rm = TRUE),
       maxDeltaDO = max(modelDoDic$output$do$dox - signalIn$getVariable("do"), na.rm = TRUE),
-      minDeltaDic = min(modelDoDic$output$dic$dic - signalIn$getVariable("dic"), na.rm = TRUE),
-      maxDeltaDic = max(modelDoDic$output$dic$dic - signalIn$getVariable("dic"), na.rm = TRUE),
+      minDeltaDic = min(modelDoDic$output$dic$dic - modelDoDic$.__enclos_env__$upstreamDIC, na.rm = TRUE),
+      maxDeltaDic = max(modelDoDic$output$dic$dic - modelDoDic$.__enclos_env__$upstreamDIC, na.rm = TRUE),
       minDeltapCO2 = min(modelDoDic$output$dic$pCO2 - signalIn$getVariable("pCO2"), na.rm = TRUE),
-      maxDeltapCO2 = max(modelDoDic$output$dic$pCO2 - signalIn$getVariable("pCO2"), na.rm = TRUE)
+      maxDeltapCO2 = max(modelDoDic$output$dic$pCO2 - signalIn$getVariable("pCO2"), na.rm = TRUE),
+      minPH = min(modelDoDic$output$dic$downstreampH, na.rm = TRUE),
+      maxPH = max(modelDoDic$output$dic$downstreampH, na.rm = TRUE)
     )
   )}
 )
-# 
-#Send plots to PDF
+
+#sending to PDF
 pdf(
-  file = "./FixationLoop.pdf",
+  file = "./AltAlkalinitySA.pdf",
   height = 8,
   width = 12
 )
-
-#setting up plotting windows
 par(
-  mar = c(4, 4.5, 1, 4.5),
-  mfcol = c(2, 3)
-)
-
-#limit values
-ymin <- min(minmaxmatrix["minDO",], signalOut$getVariable("do"), na.rm = TRUE)
-ymax <- max(minmaxmatrix["maxDO",], signalOut$getVariable("do"), na.rm = TRUE)
-yminMass <- (ymin * 0.032)
-ymaxMass <- (ymax * 0.032)
-yminPAR <- min(signalOut$getVariable("par")) 
-ymaxPAR <- max(signalOut$getVariable("par"))
-
-#setting up PAR values behind lines and points
-plot.new()
-plot.window(
-  xlim = c(min(signalOut$time),
-           max(signalOut$time)),
-  ylim = c(ymaxPAR, yminPAR + 0.04*(ymaxPAR-yminPAR)) #removing buffer to put PAR on edge
-)
-#create shape for PAR (shows photoperiod)
-polygon(
-  x = signalOut$time,
-  y = signalOut$getVariable("par"),
-  lty = "blank",
-  col = "lightgoldenrod1"
-)
-
-#tells window to stay on same plot rather than moving to new plot
-par(
-  new = TRUE
-)
-
-#set up plot DO from loop
-plot(
-  x = modelDoDic$downstreamTimePOSIX,
-  y = modelDoDic$output$do$dox,
-  type = "n",
-  ylab = bquote(.("DO Conc (") * mu * mol ~ L^-1 * .(")")),
-  xlab = bquote(.("Time(")*MST*.(")")),
-  ylim = c(ymin, ymax)
-)
-
-#observed data from file load
-points(
-  x = signalOut$time,
-  y = signalOut$getVariable("do")
-)
-
-#plot DO concentrations from the loop
-lapply(
-  X = 1:length(ratioDic),
-  FUN = function(index){
-    lines(
-      x = modelsims[[index]]$downstreamTimePOSIX,
-      y = modelsims[[index]]$output$do$dox,
-      col = modelcolors[index],
-      lwd = linewidths[index]
+    mar = c(4, 4.5, 1, 4.5),
+    layout(
+      mat = matrix(
+        data = c(1,2,3,4,5,5),
+        nrow = 2,
+        ncol = 3
+      ),
+      widths = c(1.1, 1, 1)
     )
-  }
 )
 
-#secondary axis on same plot for different units
-par(
-  new = TRUE
-)
-plot.new()
-plot.window(
-  xlim = c(0,1),
-  ylim = c(yminMass, ymaxMass)
-)
-
-axis(
-  side = 4
-)
-
-mtext(
-  text = bquote(.("DO Conc (") * mg ~ L^-1 * .(")")),
-  side = 4,
-  line = 2.5,
-  cex = 0.7
-)
-
-#limits for new plot
-ymin <- min(minmaxmatrix["minDeltaDO",], signalOut$getVariable("do")-signalIn$getVariable("do"), na.rm = TRUE)
-ymax <- max(minmaxmatrix["maxDeltaDO",], signalOut$getVariable("do")-signalIn$getVariable("do"), na.rm = TRUE)
-yminPAR <- min(signalOut$getVariable("par")) 
-ymaxPAR <- max(signalOut$getVariable("par"))
-
-#setting up PAR values behind lines and points
-plot.new()
-plot.window(
-  xlim = c(min(signalOut$time),
-           max(signalOut$time)),
-  ylim = c(ymaxPAR, yminPAR + 0.04*(ymaxPAR-yminPAR)) #removing buffer to put PAR on edge
-)
-#PAR Shape
-polygon(
-  x = signalOut$time,
-  y = signalOut$getVariable("par"),
-  lty = "blank",
-  col = "lightgoldenrod1"
-)
-
-#tells window to stay on same plot rather than moving to new plot
-par(
-  new = TRUE
-)
-
-#plot change in DO concentrations
-plot(
-  x = modelDoDic$downstreamTimePOSIX,
-  y = modelDoDic$output$do$dox-signalIn$getVariable("do"),
-  type = "n",
-  ylab = bquote(.("Change in DO Conc (") * mu * mol ~ L^-1 * .(")")),
-  xlab = bquote(.("Time(")*MST*.(")")),
-  ylim = c(ymin, ymax)
-)
-
-points(
-  x = signalOut$time,
-  y = signalOut$getVariable("do") - signalIn$getVariable("do")
-)
-
-lapply(
-  X = 1:length(ratioDic),
-  FUN = function(index){
-    lines(
-      x = modelsims[[index]]$downstreamTimePOSIX,
-      y = modelsims[[index]]$output$do$dox-signalIn$getVariable("do"),
-      col = modelcolors[index],
-      lwd = linewidths[index]
-    )
-  }
-)
-
-#secondary axis
-par(
-  new = TRUE
-)
-plot.new()
-plot.window(
-  xlim = c(0,1),
-  ylim = c(yminMass, ymaxMass)
-)
-
-axis(
-  side = 4
-)
-
-mtext(
-  text = bquote(.("Change in DO Conc (") * mg ~ L^-1 * .(")")),
-  side = 4,
-  line = 2.5,
-  cex = 0.7
-)
 
 #limits for new plot
 ymin <- min(minmaxmatrix["minDIC",], signalOut$getVariable("dic"), na.rm = TRUE)
@@ -351,7 +236,7 @@ plot(
   x = modelDoDic$downstreamTimePOSIX,
   y = modelDoDic$output$dic$dic,
   type = "n",
-  ylab = bquote(.("DIC Conc (") * mu * mol ~ L^-1 * .(")")),
+  ylab = bquote(.("DIC-C Conc (") * mu * mol ~ L^-1 * .(")")),
   xlab = bquote(.("Time(")*MST*.(")")),
   ylim = c(ymin, ymax)
 )
@@ -361,8 +246,20 @@ points(
   y = signalOut$getVariable("dic")
 )
 
+#create legend
+legend(
+  x = "bottomleft",
+  bty = "n",
+  legend = c(alkalinity, "PAR Dist."),
+  # legend = sprintf("Dic:C Fixation = %.2f", ratioDic),
+  lty = c("solid"),
+  col = c(modelcolors, "lightgoldenrod1"),
+  lwd = c(linewidths, 13),
+  title = "Alkalinity = "
+)
+
 lapply(
-  X = 1:length(ratioDic),
+  X = 1:length(alkalinity),
   FUN = function(index){
     lines(
       x = modelsims[[index]]$downstreamTimePOSIX,
@@ -371,13 +268,6 @@ lapply(
       lwd = linewidths[index]
     )
   }
-)
-
-text(
-  x = signalOut$time[70],
-  y = min(modelDoDic$output$dic$dic),
-  adj = c(1,0),
-  labels = bquote(.("DIC:C Respiration = 1.07"))
 )
 
 #secondary axis
@@ -426,12 +316,11 @@ par(
   new = TRUE
 )
 
-#plot change in DIC concentrations
 plot(
   x = modelDoDic$downstreamTimePOSIX,
-  y = modelDoDic$output$dic$dic-signalIn$getVariable("dic"),
+  y = modelDoDic$output$dic$dic-modelDoDic$.__enclos_env__$upstreamDIC,
   type = "n",
-  ylab = bquote(.("Change in DIC Conc (") * mu * mol ~ L^-1 * .(")")),
+  ylab = bquote(.("Change in DIC-C Conc (") * mu * mol ~ L^-1 * .(")")),
   xlab = bquote(.("Time(")*MST*.(")")),
   ylim = c(ymin, ymax)
 )
@@ -442,11 +331,11 @@ points(
 )
 
 lapply(
-  X = 1:length(ratioDic),
+  X = 1:length(alkalinity),
   FUN = function(index){
     lines(
       x = modelsims[[index]]$downstreamTimePOSIX,
-      y = modelsims[[index]]$output$dic$dic-signalIn$getVariable("dic"),
+      y = modelsims[[index]]$output$dic$dic - modelsims[[index]]$.__enclos_env__$upstreamDIC,
       col = modelcolors[index],
       lwd = linewidths[index]
     )
@@ -480,6 +369,12 @@ yminPAR <- min(signalOut$getVariable("par"))
 ymaxPAR <- max(signalOut$getVariable("par"))
 
 #setting up PAR values behind lines and points
+mar = par("mar")
+mar[4] = 1.2
+par(
+  mar = mar
+)
+
 plot.new()
 plot.window(
   xlim = c(min(signalOut$time),
@@ -498,7 +393,6 @@ par(
   new = TRUE
 )
 
-#Plot pCO2 concentrations
 plot(
   x = modelDoDic$downstreamTimePOSIX,
   y = modelDoDic$output$dic$pCO2,
@@ -514,7 +408,7 @@ points(
 )
 
 lapply(
-  X = 1:length(ratioDic),
+  X = 1:length(alkalinity),
   FUN = function(index){
     lines(
       x = modelsims[[index]]$downstreamTimePOSIX,
@@ -525,6 +419,8 @@ lapply(
   }
 )
 
+
+#new plot
 ymin <- min(minmaxmatrix["minDeltapCO2",], signalOut$getVariable("pCO2")-signalIn$getVariable("pCO2"), na.rm = TRUE)
 ymax <- max(minmaxmatrix["maxDeltapCO2",], signalOut$getVariable("pCO2")-signalIn$getVariable("pCO2"), na.rm = TRUE)
 yminPAR <- min(signalOut$getVariable("par")) 
@@ -549,7 +445,6 @@ par(
   new = TRUE
 )
 
-#plot change in pCO2 concentration
 plot(
   x = modelDoDic$downstreamTimePOSIX,
   y = modelDoDic$output$dic$pCO2-signalIn$getVariable("pCO2"),
@@ -559,29 +454,64 @@ plot(
   ylim = c(ymin, ymax)
 )
 
-#create legend
-legend(
-  x = "bottomright",
-  bty = "n",
-  legend = c(ratioDic, "PAR Dist."),
-  # legend = sprintf("Dic:C Fixation = %.2f", ratioDic),
-  lty = c("solid"),
-  col = c(modelcolors, "lightgoldenrod1"),
-  lwd = c(linewidths, 15),
-  title = "DIC:C Fixation = "
-)
-
 points(
   x = signalOut$time,
   y = signalOut$getVariable("pCO2") - signalIn$getVariable("pCO2")
 )
 
 lapply(
-  X = 1:length(ratioDic),
+  X = 1:length(alkalinity),
   FUN = function(index){
     lines(
       x = modelsims[[index]]$downstreamTimePOSIX,
       y = modelsims[[index]]$output$dic$pCO2-signalIn$getVariable("pCO2"),
+      col = modelcolors[index],
+      lwd = linewidths[index]
+    )
+  }
+)
+
+#plot pH
+mar = par("mar")
+mar[4] = 1.3
+par(
+  mar = mar
+)
+
+plot.new()
+plot.window(
+  xlim = c(min(signalOut$time),
+           max(signalOut$time)),
+  ylim = c(ymaxPAR, yminPAR + 0.04*(ymaxPAR-yminPAR)) #removing buffer to put PAR on edge
+)
+polygon(
+  x = signalOut$time,
+  y = signalOut$getVariable("par"),
+  lty = "blank",
+  col = "lightgoldenrod1"
+)
+
+#tells window to stay on same plot rather than moving to new plot
+par(
+  new = TRUE
+)
+
+plot(
+  x = modelDoDic$downstreamTimePOSIX,
+  y = modelDoDic$output$dic$downstreampH,
+  type = "n",
+  ylab = bquote(.("pH")),
+  xlab = bquote(.("Time(")*MST*.(")")),
+  ylim = c(min(minmaxmatrix["minPH",], na.rm = TRUE),
+          max(minmaxmatrix["maxPH",], na.rm = TRUE))
+)
+
+lapply(
+  X = 1:length(alkalinity),
+  FUN = function(index){
+    lines(
+      x = modelsims[[index]]$downstreamTimePOSIX,
+      y = modelsims[[index]]$output$dic$downstreampH,
       col = modelcolors[index],
       lwd = linewidths[index]
     )
