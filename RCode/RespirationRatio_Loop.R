@@ -2,6 +2,8 @@
 #The packages and base code for these models were written by Dr. Rob Payn at Montana State University.
 #The git hub access is below and is publicly available from https://github.com/robpayn. The metabc package
 #runs the code through C rather than straight through R studio program. The program will print the output graphs as PDF.
+#The code preforms a sensitivity analysis on alkalinity values for the Upper Clarkfork River in Montana.
+
 
 #Loop for the respiration ratio values, fixation value set to (-0.32) for the two station model
 
